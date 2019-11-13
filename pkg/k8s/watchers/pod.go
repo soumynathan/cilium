@@ -50,8 +50,8 @@ func (k *K8sWatcher) podsInit(k8sClient kubernetes.Interface, serPods *serialize
 	var once sync.Once
 	for {
 		swgPods := lock.NewStoppableWaitGroup()
-		createPodController := func(fieldSelector fields.Selector) cache.Controller {
-			_, podController := informer.NewInformer(
+		createPodController := func(fieldSelector fields.Selector) (cache.Store, cache.Controller) {
+			return informer.NewInformer(
 				cache.NewListWatchFromClient(k8sClient.CoreV1().RESTClient(),
 					"pods", v1.NamespaceAll, fieldSelector),
 				&v1.Pod{},
@@ -108,9 +108,8 @@ func (k *K8sWatcher) podsInit(k8sClient kubernetes.Interface, serPods *serialize
 				},
 				k8s.ConvertToPod,
 			)
-			return podController
 		}
-		podController := createPodController(fields.Everything())
+		podStore, podController := createPodController(fields.Everything())
 
 		isConnected := make(chan struct{})
 		// once isConnected is closed, it will stop waiting on caches to be
@@ -121,6 +120,13 @@ func (k *K8sWatcher) podsInit(k8sClient kubernetes.Interface, serPods *serialize
 			k.k8sAPIGroups.addAPI(k8sAPIGroupPodV1Core)
 		})
 		go podController.Run(isConnected)
+
+		k.podStoreMU.Lock()
+		k.podStore = podStore
+		k.podStoreMU.Unlock()
+		k.podStoreOnce.Do(func() {
+			close(k.podStoreSet)
+		})
 
 		if !option.Config.K8sEventHandover {
 			return
@@ -134,8 +140,12 @@ func (k *K8sWatcher) podsInit(k8sClient kubernetes.Interface, serPods *serialize
 
 		log.WithField(logfields.Node, node.GetName()).Info("Connected to KVStore, watching for pod events on node")
 		// Only watch for pod events for our node.
-		podController = createPodController(fields.ParseSelectorOrDie("spec.nodeName=" + node.GetName()))
+		podStore, podController = createPodController(fields.ParseSelectorOrDie("spec.nodeName=" + node.GetName()))
 		isConnected = make(chan struct{})
+		k.podStoreMU.Lock()
+		k.podStore = podStore
+		k.podStoreMU.Unlock()
+
 		go podController.Run(isConnected)
 
 		// Create a new pod controller when we are disconnected with the

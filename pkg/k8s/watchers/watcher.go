@@ -27,6 +27,7 @@ import (
 	"github.com/cilium/cilium/pkg/endpoint"
 	"github.com/cilium/cilium/pkg/k8s"
 	k8smetrics "github.com/cilium/cilium/pkg/k8s/metrics"
+	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	"github.com/cilium/cilium/pkg/lock"
@@ -40,6 +41,8 @@ import (
 	"github.com/cilium/cilium/pkg/serializer"
 
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
 	k8s_metrics "k8s.io/client-go/tools/metrics"
@@ -147,6 +150,11 @@ type K8sWatcher struct {
 	policyManager       policyManager
 	policyRepository    policyRepository
 	svcManager          svcManager
+
+	podStoreMU   lock.RWMutex
+	podStore     cache.Store
+	podStoreSet  chan struct{}
+	podStoreOnce sync.Once
 }
 
 func NewK8sWatcher(
@@ -164,6 +172,7 @@ func NewK8sWatcher(
 		policyManager:       policyManager,
 		policyRepository:    policyRepository,
 		svcManager:          svcManager,
+		podStoreSet:         make(chan struct{}),
 	}
 }
 
@@ -656,4 +665,28 @@ func (k *K8sWatcher) K8sEventReceived(scope string, action string, valid, equal 
 	k8smetrics.LastInteraction.Reset()
 
 	metrics.KubernetesEventReceived.WithLabelValues(scope, action, strconv.FormatBool(valid), strconv.FormatBool(equal)).Inc()
+}
+
+// GetCachedPod returns a pod from the local store. Depending if the Cilium
+// agent flag `option.Config.K8sEventHandover` this function might only return
+// local pods.
+// If `option.Config.K8sEventHandover` is:
+//  - true: returns only local pods received by the pod watcher.
+//  - false: returns any pod in the cluster received by the pod watcher.
+func (k *K8sWatcher) GetCachedPod(namespace, name string) (*types.Pod, error) {
+	k.WaitForCacheSync(k8sAPIGroupPodV1Core)
+	<-k.podStoreSet
+	k.podStoreMU.RLock()
+	defer k.podStoreMU.RUnlock()
+	podInterface, exists, err := k.podStore.Get(namespace + "/" + name)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, errors.NewNotFound(schema.GroupResource{
+			Group:    "core",
+			Resource: "pod",
+		}, name)
+	}
+	return podInterface.(*types.Pod), nil
 }
