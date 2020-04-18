@@ -1848,6 +1848,12 @@ func (kub *Kubectl) WaitForCEPIdentity(ns, podName string) error {
 	return WithContext(ctx, body, 1*time.Second)
 }
 
+// CiliumCheckCmdOutput checks for the cmd output for specific string match
+func (kub *Kubectl) CiliumCheckCmdOutput(cmdOutput string, matchString string) (bool, error) {
+	matchfound, err := regexp.MatchString(matchString, cmdOutput)
+	return matchfound, err
+}
+
 // CiliumExecContext runs cmd in the specified Cilium pod with the given context.
 func (kub *Kubectl) CiliumExecContext(ctx context.Context, pod string, cmd string) *CmdRes {
 	limitTimes := 5

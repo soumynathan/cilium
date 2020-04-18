@@ -785,11 +785,20 @@ var _ = Describe("K8sServicesTest", func() {
 			pod, err := kubectl.GetCiliumPodOnNode(helpers.CiliumNamespace, helpers.K8s2)
 			Expect(err).Should(BeNil(), "Cannot determine cilium pod name")
 
-			res := kubectl.CiliumExecContext(context.TODO(), pod, "cilium service list | grep "+k8s2IP+":"+httpHostPortStr+" | grep HostPort")
-			Expect(res.GetStdOut()).ShouldNot(BeEmpty(), "No HostPort entry for "+k8s2IP+":"+httpHostPortStr)
+			res := kubectl.CiliumExecMustSucceed(context.TODO(), pod, "cilium service list")
+			matchLookup := k8s2IP + ":" + httpHostPortStr
+			lookupFound, err := kubectl.CiliumCheckCmdOutput(res.GetStdOut(), matchLookup)
+			if lookupFound {
+				Expect(res.GetStdOut()).ShouldNot(BeEmpty(), "No HostPort entry for "+k8s2IP+":"+httpHostPortStr)
+			}
 
-			res = kubectl.CiliumExecContext(context.TODO(), pod, "cilium service list | grep "+k8s2IP+":"+tftpHostPortStr+" | grep HostPort")
-			Expect(res.GetStdOut()).ShouldNot(BeEmpty(), "No HostPort entry for "+k8s2IP+":"+tftpHostPortStr)
+			res = kubectl.CiliumExecMustSucceed(context.TODO(), pod, "cilium service list")
+			// grep the result for  "+k8s2IP+":"+tftpHostPortStr+" | grep HostPort")
+			matchTftpLookup := k8s2IP + ":" + tftpHostPortStr
+			lookupTftpfound, err := kubectl.CiliumCheckCmdOutput(res.GetStdOut(), matchTftpLookup)
+			if lookupTftpfound {
+				Expect(res.GetStdOut()).ShouldNot(BeEmpty(), "No HostPort entry for "+k8s2IP+":"+tftpHostPortStr)
+			}
 
 			// Cluster-internal connectivity to HostPort
 			httpURL = getHTTPLink(k8s2IP, httpHostPort)
@@ -1016,12 +1025,18 @@ var _ = Describe("K8sServicesTest", func() {
 					url = getHTTPLink(k8s1IP, data.Spec.Ports[0].NodePort)
 
 					doRequestsFromThirdHostWithLocalPort(url, 1, true, 64000)
-					res := kubectl.CiliumExecContext(context.TODO(), pod, "cilium bpf nat list | grep 64000")
-					Expect(res.GetStdOut()).ShouldNot(BeEmpty(), "NAT entry was not evicted")
+					res := kubectl.CiliumExecMustSucceed(context.TODO(), pod, "cilium bpf nat list")
+					portFound, err := kubectl.CiliumCheckCmdOutput(res.GetStdOut(), "64000")
+					if portFound {
+						Expect(res.GetStdOut()).ShouldNot(BeEmpty(), "NAT entry was not evicted")
+					}
 					// Flush CT maps to trigger eviction of the NAT entries (simulates CT GC)
 					kubectl.CiliumExecMustSucceed(context.TODO(), pod, "cilium bpf ct flush global", "Unable to flush CT maps")
-					res = kubectl.CiliumExecContext(context.TODO(), pod, "cilium bpf nat list | grep 64000")
-					res.ExpectFail("NAT entry was not evicted")
+					res = kubectl.CiliumExecMustSucceed(context.TODO(), pod, "cilium bpf nat list")
+					portFoundFlush, err := kubectl.CiliumCheckCmdOutput(res.GetStdOut(), "64000")
+					if !portFoundFlush {
+						res.ExpectFail("NAT entry was not evicted")
+					}
 				})
 
 				SkipItIf(helpers.DoesNotExistNodeWithoutCilium, "Tests with XDP, direct routing and SNAT", func() {
